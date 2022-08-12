@@ -1,0 +1,59 @@
+name: "Eventide component workflow: deploy"
+
+on:
+  workflow_call:
+    inputs:
+      component_name:
+        required: true
+        type: string
+      namespace:
+        required: true
+        type: string
+      environment:
+        required: true
+        type: string
+
+    secrets:
+      CLUSTER_NAME:
+        required: true
+      CLUSTER_REGION:
+        required: true
+      GOOGLE_CREDENTIALS:
+        required: true
+      GCLOUD_PROJECT_ID:
+        required: true
+
+jobs:
+  deploy:
+    env:
+      IMAGEBASE: gcr.io/${{ secrets.GCLOUD_PROJECT_ID }}/${{ inputs.component_name }}
+
+    runs-on: self-hosted
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - id: 'auth'
+        uses: 'google-github-actions/auth@v0'
+        with:
+          credentials_json: ${{ secrets.GOOGLE_CREDENTIALS }}
+
+      - name: 'Set up Cloud SDK'
+        uses: 'google-github-actions/setup-gcloud@v0'
+        with:
+          install_components: 'kubectl'
+
+      - run: gcloud --quiet auth configure-docker
+
+      - id: 'get-credentials'
+        uses: 'google-github-actions/get-gke-credentials@v0'
+        with:
+          cluster_name: ${{ secrets.CLUSTER_NAME }}
+          location: ${{ secrets.CLUSTER_REGION }}
+
+      - uses: imranismail/setup-kustomize@v1
+
+      - run: |
+          cd kustomize/${{ inputs.environment }}
+          kustomize edit set image ${{ inputs.component_name }}-image=${{ env.IMAGEBASE }}:latest
+          kustomize build | kubectl apply --namespace=${{ inputs.namespace }} -f-
