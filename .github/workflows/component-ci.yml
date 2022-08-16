@@ -94,7 +94,7 @@ jobs:
             --env EVENTIDE_DATABASE_URL=$EVENTIDE_DATABASE_URL \
             --env DATABASE_URL=$DATABASE_URL \
             --rm ${{ env.IMAGEBASE }}:${{ env.imagetag }} \
-            /bin/bash -c "mdb-create-db && bundle exec ruby test/automated.rb"
+            /bin/bash -c "bin/ci_tests"
 
   push-image:
     env:
