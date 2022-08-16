@@ -23,6 +23,7 @@ jobs:
       PGHOST: postgres
       PGUSER: postgres
       EVENTIDE_DATABASE_URL: postgres://message_store@postgres/message_store
+      DATABASE_URL: postgres://postgres@postgres:5432
 
     runs-on: self-hosted
 
@@ -86,8 +87,12 @@ jobs:
 
       - name: Tests
         run: |
-          docker run --network "${{ job.container.network }}" --env POSTGRES_HOST_AUTH_METHOD=$POSTGRES_HOST_AUTH_METHOD \
-            --env PGHOST=$PGHOST --env PGUSER=$PGUSER --env EVENTIDE_DATABASE_URL=$EVENTIDE_DATABASE_URL \
+          docker run --network "${{ job.container.network }}" \
+            --env POSTGRES_HOST_AUTH_METHOD=$POSTGRES_HOST_AUTH_METHOD \
+            --env PGHOST=$PGHOST \
+            --env PGUSER=$PGUSER \
+            --env EVENTIDE_DATABASE_URL=$EVENTIDE_DATABASE_URL \
+            --env DATABASE_URL=$DATABASE_URL \
             --rm ${{ env.IMAGEBASE }}:${{ env.imagetag }} \
             /bin/bash -c "mdb-create-db && bundle exec ruby test/automated.rb"
 
