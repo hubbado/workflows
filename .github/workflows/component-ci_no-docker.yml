@@ -39,5 +39,4 @@ jobs:
           bundler-cache: true
 
       - name: Tests
-        run: |
-          bundle exec ruby test/automated.rb
+        run: ./test_ci.sh
