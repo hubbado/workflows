@@ -1,0 +1,43 @@
+name: "Eventide component workflow: no docker"
+
+on:
+  workflow_call:
+    secrets:
+      BUNDLE_RUBYGEMS__PKG__GITHUB__COM:
+        required: true
+
+jobs:
+  build:
+    runs-on: self-hosted
+
+    env:
+      ImageOS: ubuntu20
+      BUNDLE_RUBYGEMS__PKG__GITHUB__COM: ${{ secrets.BUNDLE_RUBYGEMS__PKG__GITHUB__COM }}
+
+    services:
+      postgres:
+        image: postgres:alpine
+        ports:
+          - 5432:5432
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Install dependent libraries
+        run: sudo apt-get install -y libpq-dev
+
+      - uses: actions/checkout@v3
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          bundler-cache: true
+
+      - name: Tests
+        run: |
+          bundle exec ruby test/automated.rb
