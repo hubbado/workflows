@@ -99,7 +99,7 @@ jobs:
 
     needs: build
 
-    if: github.ref == 'refs/heads/master' && ${{ needs.build.status }} == 'success'
+    if: ${{ github.ref == 'refs/heads/master' && needs.build.result == 'success' }}
 
     steps:
       - name: Login to GCR
