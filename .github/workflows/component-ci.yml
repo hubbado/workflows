@@ -6,6 +6,10 @@ on:
       component_name:
         required: true
         type: string
+      force_push_image:
+        required: false
+        type: boolean
+        default: false
 
     secrets:
       GOOGLE_CREDENTIALS:
@@ -104,7 +108,7 @@ jobs:
 
     needs: build
 
-    if: ${{ github.ref == 'refs/heads/master' && needs.build.result == 'success' }}
+    if: ${{ inputs.force_push_image || github.ref == 'refs/heads/master' && needs.build.result == 'success' }}
 
     steps:
       - name: Login to GCR
