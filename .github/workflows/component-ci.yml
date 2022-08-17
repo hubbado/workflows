@@ -130,9 +130,6 @@ jobs:
         with:
           path: imagetag
           key: image-cache-${{ runner.os }}-${{ github.repository }}-${{ github.ref_name }}
-          restore-keys: |
-            image-cache-${{ runner.os }}-${{ github.repository }}-${{ github.ref_name }}
-            image-cache-${{ runner.os }}-${{ github.repository }}-
 
       - name: Push to registry
         run: |
