@@ -138,6 +138,7 @@ jobs:
         run: |
           docker tag "${{ env.IMAGEBASE }}:${{ needs.build.outputs.imagetag }}" "${{ env.IMAGEBASE }}:latest"
           docker push "${{ env.IMAGEBASE }}:${{ needs.build.outputs.imagetag }}"
+          docker push "${{ env.IMAGEBASE }}:latest"
 
       - name: Clean image
         run: |
