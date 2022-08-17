@@ -53,7 +53,19 @@ jobs:
 
       - uses: imranismail/setup-kustomize@v1
 
+      - name: Cache imagetag
+        uses: actions/cache@v3
+        env:
+          cache-name: cache-imagetag
+        with:
+          path: imagetag
+          key: image-cache-${{ runner.os }}-${{ github.repository }}-${{ github.ref_name }}
+          restore-keys: |
+            image-cache-${{ runner.os }}-${{ github.repository }}-${{ github.ref_name }}
+            image-cache-${{ runner.os }}-${{ github.repository }}-
+
       - run: |
+          imagetag=`cat imagetag`
           cd kustomize/${{ inputs.environment }}
-          kustomize edit set image ${{ inputs.component_name }}-image=${{ env.IMAGEBASE }}:latest
+          kustomize edit set image ${{ inputs.component_name }}-image=${{ env.IMAGEBASE }}:$imagetag
           kustomize build | kubectl apply --namespace=${{ inputs.namespace }} -f-

@@ -118,6 +118,19 @@ jobs:
           username: _json_key
           password: ${{ secrets.GOOGLE_CREDENTIALS }}
 
+      - run: echo ${{ needs.build.outputs.imagetag }} > imagetag
+
+      - name: Cache imagetag
+        uses: actions/cache@v3
+        env:
+          cache-name: cache-imagetag
+        with:
+          path: imagetag
+          key: image-cache-${{ runner.os }}-${{ github.repository }}-${{ github.ref_name }}
+          restore-keys: |
+            image-cache-${{ runner.os }}-${{ github.repository }}-${{ github.ref_name }}
+            image-cache-${{ runner.os }}-${{ github.repository }}-
+
       - name: Push to registry
         run: |
           docker push "${{ env.IMAGEBASE }}:${{ needs.build.outputs.branch }}"
