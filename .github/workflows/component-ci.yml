@@ -82,7 +82,6 @@ jobs:
           cache-from: |
             ${{ env.IMAGEBASE }}:master
           tags: |
-            ${{ env.IMAGEBASE }}:${{ env.branch }}
             ${{ env.IMAGEBASE }}:${{ env.imagetag }}
           labels: |
             ${{ inputs.component_name }}
@@ -99,6 +98,10 @@ jobs:
             --env DATABASE_URL=$DATABASE_URL \
             --rm ${{ env.IMAGEBASE }}:${{ env.imagetag }} \
             /bin/bash -c "bin/ci_tests"
+
+      - name: Clean image
+        if: ${{ github.ref != 'refs/heads/master' }}
+        run: docker rmi ${{ env.IMAGEBASE }}:${{ env.imagetag }}
 
   push-image:
     env:
@@ -133,7 +136,10 @@ jobs:
 
       - name: Push to registry
         run: |
-          docker push "${{ env.IMAGEBASE }}:${{ needs.build.outputs.branch }}"
+          docker tag "${{ env.IMAGEBASE }}:${{ needs.build.outputs.imagetag }}" "${{ env.IMAGEBASE }}:latest"
           docker push "${{ env.IMAGEBASE }}:${{ needs.build.outputs.imagetag }}"
-          docker tag "${{ env.IMAGEBASE }}:${{ needs.build.outputs.branch }}" "${{ env.IMAGEBASE }}:latest"
-          docker push "${{ env.IMAGEBASE }}:latest"
+
+      - name: Clean image
+        run: |
+          docker rmi ${{ env.IMAGEBASE }}:${{ needs.build.outputs.imagetag }}
+          docker rmi ${{ env.IMAGEBASE }}:latest
