@@ -59,10 +59,9 @@ jobs:
           cache-name: cache-imagetag
         with:
           path: imagetag
-          key: image-cache-${{ runner.os }}-${{ github.repository }}-${{ github.ref_name }}
+          key: image-cache-${{ runner.os }}-${{ github.repository }}-${{ github.ref_name }}-${{ github.sha }}
           restore-keys: |
-            image-cache-${{ runner.os }}-${{ github.repository }}-${{ github.ref_name }}
-            image-cache-${{ runner.os }}-${{ github.repository }}-
+            image-cache-${{ runner.os }}-${{ github.repository }}-${{ github.ref_name }}-
 
       - run: |
           imagetag=`cat imagetag`

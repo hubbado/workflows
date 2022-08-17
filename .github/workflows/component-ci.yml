@@ -132,7 +132,7 @@ jobs:
           cache-name: cache-imagetag
         with:
           path: imagetag
-          key: image-cache-${{ runner.os }}-${{ github.repository }}-${{ github.ref_name }}
+          key: image-cache-${{ runner.os }}-${{ github.repository }}-${{ github.ref_name }}-${{ github.sha }}
 
       - name: Push to registry
         run: |
