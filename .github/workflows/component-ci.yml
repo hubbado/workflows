@@ -16,6 +16,8 @@ on:
         required: true
       BUNDLE_RUBYGEMS__PKG__GITHUB__COM:
         required: true
+      BUNDLE_GITHUB__COM:
+        required: false
       GCLOUD_PROJECT_ID:
         required: true
 
@@ -87,6 +89,7 @@ jobs:
             ${{ inputs.component_name }}
           build-args: |
             BUNDLE_RUBYGEMS__PKG__GITHUB__COM=${{ secrets.BUNDLE_RUBYGEMS__PKG__GITHUB__COM }}
+            BUNDLE_GITHUB__COM=${{ secrets.BUNDLE_GITHUB__COM }}
 
       - name: Tests
         run: |
