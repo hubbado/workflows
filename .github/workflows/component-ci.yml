@@ -76,6 +76,11 @@ jobs:
           username: _json_key
           password: ${{ secrets.GOOGLE_CREDENTIALS }}
 
+      - name: Setup MessageDB store
+        run: bundle exec mdb-create-db
+        env:
+          PGHOST: ${{ steps.postgresql-ip.outputs.ip }}
+
       - name: Build and export to Docker
         uses: docker/build-push-action@v3
         with:
