@@ -48,7 +48,6 @@ jobs:
           --health-retries 5
 
     outputs:
-      branch: ${{ env.branch }}
       imagetag: ${{ env.imagetag }}
 
     steps:
@@ -102,10 +101,6 @@ jobs:
             --rm ${{ env.IMAGEBASE }}:${{ env.imagetag }} \
             /bin/bash -c "bin/ci_tests"
 
-      - name: Clean image
-        if: ${{ github.ref != 'refs/heads/master' }}
-        run: docker rmi ${{ env.IMAGEBASE }}:${{ env.imagetag }}
-
   push-image:
     env:
       IMAGEBASE: gcr.io/${{ secrets.GCLOUD_PROJECT_ID }}/${{ inputs.component_name }}
@@ -134,13 +129,20 @@ jobs:
           path: imagetag
           key: image-cache-${{ runner.os }}-${{ github.repository }}-${{ github.ref_name }}-${{ github.sha }}
 
-      - name: Push to registry
-        run: |
-          docker tag "${{ env.IMAGEBASE }}:${{ needs.build.outputs.imagetag }}" "${{ env.IMAGEBASE }}:latest"
-          docker push "${{ env.IMAGEBASE }}:${{ needs.build.outputs.imagetag }}"
-          docker push "${{ env.IMAGEBASE }}:latest"
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
 
-      - name: Clean image
-        run: |
-          docker rmi ${{ env.IMAGEBASE }}:${{ needs.build.outputs.imagetag }}
-          docker rmi ${{ env.IMAGEBASE }}:latest
+      - name: Build and push to Registry
+        uses: docker/build-push-action@v3
+        with:
+          push: true
+          cache-from: |
+            ${{ env.IMAGEBASE }}:master
+          tags: |
+            ${{ env.IMAGEBASE }}:${{ needs.build.outputs.imagetag }}
+            ${{ env.IMAGEBASE }}:latest
+          labels: |
+            ${{ inputs.component_name }}
+          build-args: |
+            BUNDLE_RUBYGEMS__PKG__GITHUB__COM=${{ secrets.BUNDLE_RUBYGEMS__PKG__GITHUB__COM }}
+            BUNDLE_GITHUB__COM=${{ secrets.BUNDLE_GITHUB__COM }}
