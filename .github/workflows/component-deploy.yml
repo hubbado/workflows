@@ -38,11 +38,6 @@ jobs:
         with:
           credentials_json: ${{ secrets.GOOGLE_CREDENTIALS }}
 
-      - name: 'Set up Cloud SDK'
-        uses: 'google-github-actions/setup-gcloud@v0'
-        with:
-          install_components: 'kubectl'
-
       - run: gcloud --quiet auth configure-docker
 
       - id: 'get-credentials'
@@ -50,8 +45,6 @@ jobs:
         with:
           cluster_name: ${{ secrets.CLUSTER_NAME }}
           location: ${{ secrets.CLUSTER_REGION }}
-
-      - uses: imranismail/setup-kustomize@v1
 
       - name: Cache imagetag
         uses: actions/cache@v3
