@@ -56,8 +56,14 @@ jobs:
           restore-keys: |
             image-cache-${{ runner.os }}-${{ github.repository }}-${{ github.ref_name }}-
 
-      - run: |
+      - name: Build image and deploy
+        run: |
           imagetag=`cat imagetag`
           cd kustomize/${{ inputs.environment }}
           kustomize edit set image ${{ inputs.component_name }}-image=${{ env.IMAGEBASE }}:$imagetag
           kustomize build | kubectl apply --namespace=${{ inputs.namespace }} -f-
+
+      - name: Check status
+        run: |
+          source /home/runner/status_deployment.sh
+          check_status_and_auto_rollback_if_necessary "${{ inputs.environment }}-${{ inputs.component_name }}" "${{ inputs.namespace }}"
