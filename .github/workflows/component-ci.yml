@@ -47,9 +47,6 @@ jobs:
           --health-timeout 5s
           --health-retries 5
 
-    outputs:
-      imagetag: ${{ env.imagetag }}
-
     steps:
       - uses: actions/checkout@v3
 
@@ -75,15 +72,16 @@ jobs:
           username: _json_key
           password: ${{ secrets.GOOGLE_CREDENTIALS }}
 
-      - name: Build and export to Docker
+      - name: Build and export to Docker (to GCP in master)
         uses: docker/build-push-action@v3
         with:
-          load: true
-          push: false
+          load: ${{ !(github.ref == 'refs/heads/master') }}
+          push: ${{ github.ref == 'refs/heads/master' }}
           cache-from: |
             ${{ env.IMAGEBASE }}:master
           tags: |
             ${{ env.IMAGEBASE }}:${{ env.imagetag }}
+            ${{ env.IMAGEBASE }}:latest
           labels: |
             ${{ inputs.component_name }}
           build-args: |
@@ -101,48 +99,13 @@ jobs:
             --rm ${{ env.IMAGEBASE }}:${{ env.imagetag }} \
             /bin/bash -c "bin/ci_tests"
 
-  push-image:
-    env:
-      IMAGEBASE: gcr.io/${{ secrets.GCLOUD_PROJECT_ID }}/${{ inputs.component_name }}
-
-    runs-on: self-hosted
-
-    needs: build
-
-    if: ${{ inputs.force_push_image || github.ref == 'refs/heads/master' && needs.build.result == 'success' }}
-
-    steps:
-      - name: Login to GCR
-        uses: docker/login-action@v2
-        with:
-          registry: gcr.io
-          username: _json_key
-          password: ${{ secrets.GOOGLE_CREDENTIALS }}
-
-      - run: echo ${{ needs.build.outputs.imagetag }} > imagetag
+      - run: echo ${{ env.imagetag }} > imagetag
 
       - name: Cache imagetag
+        if: ${{ github.ref == 'refs/heads/master' }}
         uses: actions/cache@v3
         env:
           cache-name: cache-imagetag
         with:
           path: imagetag
           key: image-cache-${{ runner.os }}-${{ github.repository }}-${{ github.ref_name }}-${{ github.sha }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
-
-      - name: Build and push to Registry
-        uses: docker/build-push-action@v3
-        with:
-          push: true
-          cache-from: |
-            ${{ env.IMAGEBASE }}:master
-          tags: |
-            ${{ env.IMAGEBASE }}:${{ needs.build.outputs.imagetag }}
-            ${{ env.IMAGEBASE }}:latest
-          labels: |
-            ${{ inputs.component_name }}
-          build-args: |
-            BUNDLE_RUBYGEMS__PKG__GITHUB__COM=${{ secrets.BUNDLE_RUBYGEMS__PKG__GITHUB__COM }}
-            BUNDLE_GITHUB__COM=${{ secrets.BUNDLE_GITHUB__COM }}
