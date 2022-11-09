@@ -72,13 +72,14 @@ jobs:
           username: _json_key
           password: ${{ secrets.GOOGLE_CREDENTIALS }}
 
-      - name: Build and export to Docker (to GCP in master)
+      - name: Build and export to Docker (to GCP in master/main)
         uses: docker/build-push-action@v3
         with:
-          load: ${{ !(github.ref == 'refs/heads/master') }}
-          push: ${{ github.ref == 'refs/heads/master' }}
+          load: ${{ !(github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main') }}
+          push: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
           cache-from: |
             ${{ env.IMAGEBASE }}:master
+            ${{ env.IMAGEBASE }}:main
           tags: |
             ${{ env.IMAGEBASE }}:${{ env.imagetag }}
             ${{ env.IMAGEBASE }}:latest
@@ -102,7 +103,7 @@ jobs:
       - run: echo ${{ env.imagetag }} > imagetag
 
       - name: Cache imagetag
-        if: ${{ github.ref == 'refs/heads/master' }}
+        if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
         uses: actions/cache@v3
         env:
           cache-name: cache-imagetag
