@@ -43,4 +43,4 @@ jobs:
           bundler-cache: true
 
       - name: Tests
-        run: ./test_ci.sh
+        run: bin/ci_tests
