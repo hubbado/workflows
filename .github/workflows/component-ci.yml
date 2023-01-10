@@ -72,19 +72,20 @@ jobs:
           username: _json_key
           password: ${{ secrets.GOOGLE_CREDENTIALS }}
 
-      - name: Build and export to Docker (to GCP in master/main)
+      - name: Build and export to Docker (to GCP in master)
         uses: docker/build-push-action@v3
         with:
-          load: ${{ !(github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main') }}
-          push: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
+          load: ${{ !(github.ref == 'refs/heads/master') }}
+          push: ${{ github.ref == 'refs/heads/master' }}
           cache-from: |
             ${{ env.IMAGEBASE }}:master
-            ${{ env.IMAGEBASE }}:main
           tags: |
             ${{ env.IMAGEBASE }}:${{ env.imagetag }}
             ${{ env.IMAGEBASE }}:latest
           labels: |
             ${{ inputs.component_name }}
+          build-args: |
+            POSTURE=${{ github.ref == 'refs/heads/master' && 'operational' || 'dev' }}
           secrets: |
             BUNDLE_RUBYGEMS__PKG__GITHUB__COM=${{ secrets.BUNDLE_RUBYGEMS__PKG__GITHUB__COM }}
             BUNDLE_GITHUB__COM=${{ secrets.BUNDLE_GITHUB__COM }}
@@ -103,7 +104,7 @@ jobs:
       - run: echo ${{ env.imagetag }} > imagetag
 
       - name: Cache imagetag
-        if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
+        if: ${{ github.ref == 'refs/heads/master' }}
         uses: actions/cache@v3
         env:
           cache-name: cache-imagetag
