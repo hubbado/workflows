@@ -74,7 +74,7 @@ jobs:
           load: true
           push: false
           cache-from: |
-            ${{ env.IMAGEBASE }}:master
+            ${{ env.IMAGEBASE }}:latest
           tags: |
             ${{ env.IMAGEBASE }}:${{ env.imagetag }}
           labels: |

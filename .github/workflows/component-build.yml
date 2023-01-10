@@ -55,13 +55,15 @@ jobs:
           load: false
           push: true
           cache-from: |
-            ${{ env.IMAGEBASE }}:master
+            ${{ env.IMAGEBASE }}:latest
           tags: |
             ${{ env.IMAGEBASE }}:${{ env.imagetag }}
             ${{ env.IMAGEBASE }}:latest
           labels: |
             ${{ inputs.component_name }}
           build-args: |
+            POSTURE=operational
+          secrets: |
             BUNDLE_RUBYGEMS__PKG__GITHUB__COM=${{ secrets.BUNDLE_RUBYGEMS__PKG__GITHUB__COM }}
             BUNDLE_GITHUB__COM=${{ secrets.BUNDLE_GITHUB__COM }}
 
