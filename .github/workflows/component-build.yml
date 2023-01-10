@@ -1,4 +1,4 @@
-name: "Eventide component workflow: CI Tests"
+name: "Eventide component workflow: build image and push"
 
 on:
   workflow_call:
@@ -13,7 +13,7 @@ on:
       BUNDLE_RUBYGEMS__PKG__GITHUB__COM:
         required: true
       BUNDLE_GITHUB__COM:
-        required: false
+        required: true
       GCLOUD_PROJECT_ID:
         required: true
 
@@ -21,27 +21,8 @@ jobs:
   build:
     env:
       IMAGEBASE: gcr.io/${{ secrets.GCLOUD_PROJECT_ID }}/${{ inputs.component_name }}
-      POSTGRES_HOST_AUTH_METHOD: trust
-      PGHOST: postgres
-      PGUSER: postgres
-      EVENTIDE_DATABASE_URL: postgres://message_store@postgres/message_store
-      DATABASE_URL: postgres://postgres@postgres:5432
 
     runs-on: self-hosted
-
-    services:
-      postgres:
-        image: postgres:alpine
-        ports:
-          - 5432:5432
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_HOST_AUTH_METHOD: trust
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
 
     steps:
       - uses: actions/checkout@v3
@@ -68,30 +49,28 @@ jobs:
           username: _json_key
           password: ${{ secrets.GOOGLE_CREDENTIALS }}
 
-      - name: Build image and load locally to Docker
+      - name: Build image and push to Docker (to GCP)
         uses: docker/build-push-action@v3
         with:
-          load: true
-          push: false
+          load: false
+          push: true
           cache-from: |
             ${{ env.IMAGEBASE }}:master
           tags: |
             ${{ env.IMAGEBASE }}:${{ env.imagetag }}
+            ${{ env.IMAGEBASE }}:latest
           labels: |
             ${{ inputs.component_name }}
           build-args: |
-            POSTURE=dev
-          secrets: |
             BUNDLE_RUBYGEMS__PKG__GITHUB__COM=${{ secrets.BUNDLE_RUBYGEMS__PKG__GITHUB__COM }}
             BUNDLE_GITHUB__COM=${{ secrets.BUNDLE_GITHUB__COM }}
 
-      - name: Tests
-        run: |
-          docker run --network "${{ job.container.network }}" \
-            --env POSTGRES_HOST_AUTH_METHOD=$POSTGRES_HOST_AUTH_METHOD \
-            --env PGHOST=$PGHOST \
-            --env PGUSER=$PGUSER \
-            --env EVENTIDE_DATABASE_URL=$EVENTIDE_DATABASE_URL \
-            --env DATABASE_URL=$DATABASE_URL \
-            --rm ${{ env.IMAGEBASE }}:${{ env.imagetag }} \
-            /bin/bash -c "bin/ci_tests"
+      - run: echo ${{ env.imagetag }} > imagetag
+
+      - name: Cache imagetag
+        uses: actions/cache@v3
+        env:
+          cache-name: cache-imagetag
+        with:
+          path: imagetag
+          key: image-cache-${{ runner.os }}-${{ github.repository }}-${{ github.ref_name }}-${{ github.sha }}
