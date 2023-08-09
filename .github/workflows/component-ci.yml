@@ -20,7 +20,7 @@ on:
 jobs:
   build:
     env:
-      IMAGEBASE: gcr.io/${{ secrets.GCLOUD_PROJECT_ID }}/${{ inputs.component_name }}
+      IMAGEBASE: europe-docker.pkg.dev/nimble-lead-281209/eu.gcr.io/${{ inputs.component_name }}
       POSTGRES_HOST_AUTH_METHOD: trust
       PGHOST: postgres
       PGUSER: postgres

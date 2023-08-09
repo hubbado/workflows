@@ -26,7 +26,7 @@ on:
 jobs:
   deploy:
     env:
-      IMAGEBASE: gcr.io/${{ secrets.GCLOUD_PROJECT_ID }}/${{ inputs.component_name }}
+      IMAGEBASE: europe-docker.pkg.dev/nimble-lead-281209/eu.gcr.io/${{ inputs.component_name }}
 
     runs-on: self-hosted
 
