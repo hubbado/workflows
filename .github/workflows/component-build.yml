@@ -25,7 +25,7 @@ jobs:
     runs-on: self-hosted
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Set branch
         run: echo "branch=${GITHUB_REF_NAME:-$(git branch | grep "\*" | cut -d\  -f2)}" >> $GITHUB_ENV
@@ -36,14 +36,8 @@ jobs:
       - name: Set imagetag
         run: echo "imagetag=${IMAGETAG:-${{ env.branch }}-$(date +%Y-%m-%d-%H-%M-%z |sed -e 's/+//')-$(echo "${{ env.commit_sha }}"|cut -c1-8)}" >> $GITHUB_ENV
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v2
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
-
       - name: Build image and push to Docker (to GCP)
-        uses: docker/build-push-action@v3
+        uses: docker/build-push-action@v5
         with:
           load: false
           push: true
