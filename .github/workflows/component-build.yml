@@ -6,6 +6,8 @@ on:
       component_name:
         required: true
         type: string
+      repository:
+        type: string
 
     secrets:
       GOOGLE_CREDENTIALS:
@@ -26,6 +28,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.repository || github.repository }}
 
       - name: Set branch
         run: echo "branch=${GITHUB_REF_NAME:-$(git branch | grep "\*" | cut -d\  -f2)}" >> $GITHUB_ENV
