@@ -8,6 +8,9 @@ on:
         type: string
       repository:
         type: string
+      branch:
+        type: string
+        default: master
 
     secrets:
       GOOGLE_CREDENTIALS:
@@ -33,6 +36,7 @@ jobs:
         with:
           repository: ${{ inputs.repository || github.repository }}
           token: ${{ secrets.CHECKOUT_TOKEN || github.token }}
+          ref: ${{ inputs.branch }}
 
       - name: Set branch
         run: echo "branch=${GITHUB_REF_NAME:-$(git branch | grep "\*" | cut -d\  -f2)}" >> $GITHUB_ENV
