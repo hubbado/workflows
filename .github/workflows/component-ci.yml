@@ -46,6 +46,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - id: 'auth'
+        uses: 'google-github-actions/auth@v2'
+        with:
+          credentials_json: '${{ secrets.GOOGLE_CREDENTIALS_GITHUB_ACTIONS }}'
+
       - name: Set branch
         run: echo "branch=${GITHUB_REF_NAME:-$(git branch | grep "\*" | cut -d\  -f2)}" >> $GITHUB_ENV
 
