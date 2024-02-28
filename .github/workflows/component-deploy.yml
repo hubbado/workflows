@@ -33,8 +33,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - id: 'auth'
+        uses: 'google-github-actions/auth@v2'
+        with:
+          credentials_json: '${{ secrets.GOOGLE_CREDENTIALS_GITHUB_ACTIONS }}'
+
       - id: 'get-credentials'
-        uses: 'google-github-actions/get-gke-credentials@v1'
+        uses: 'google-github-actions/get-gke-credentials@v2'
         with:
           cluster_name: ${{ secrets.CLUSTER_NAME }}
           location: ${{ secrets.CLUSTER_REGION }}
