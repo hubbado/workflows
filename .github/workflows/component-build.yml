@@ -23,6 +23,8 @@ on:
         required: true
       CHECKOUT_TOKEN:
         required: false
+      GOOGLE_CREDENTIALS_GITHUB_ACTIONS:
+        required: true
 
 jobs:
   build:

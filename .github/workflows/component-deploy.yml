@@ -22,6 +22,8 @@ on:
         required: true
       GCLOUD_PROJECT_ID:
         required: true
+      GOOGLE_CREDENTIALS_GITHUB_ACTIONS:
+        required: true
 
 jobs:
   deploy:
