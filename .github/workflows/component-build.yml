@@ -57,6 +57,7 @@ jobs:
       - name: Build image and push to Docker (to GCP)
         uses: docker/build-push-action@v5
         with:
+          context: .
           load: false
           push: true
           cache-from: |

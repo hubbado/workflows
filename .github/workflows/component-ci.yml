@@ -65,6 +65,7 @@ jobs:
       - name: Build image and load locally to Docker
         uses: docker/build-push-action@v5
         with:
+          context: .
           load: true
           push: false
           cache-from: |
