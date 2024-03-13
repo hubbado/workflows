@@ -11,6 +11,9 @@ on:
       branch:
         type: string
         default: master
+      cache_image_tag:
+        type: boolean
+        default: true
 
     secrets:
       GOOGLE_CREDENTIALS:
@@ -77,6 +80,7 @@ jobs:
 
       - name: Cache imagetag
         uses: actions/cache@v4
+        if:  ${{ inputs.cache_image_tag }}
         env:
           cache-name: cache-imagetag
         with:
