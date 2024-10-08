@@ -66,13 +66,13 @@ jobs:
           context: .
           load: false
           push: true
-          cache-from: |
-            ${{ env.IMAGEBASE }}:latest
           tags: |
             ${{ env.IMAGEBASE }}:${{ env.imagetag }}
             ${{ env.IMAGEBASE }}:latest
           labels: |
             ${{ inputs.component_name }}
+          cache-from: type=registry,ref=${{ env.IMAGEBASE }}:buildcache
+          cache-to: type=registry,ref=${{ env.IMAGEBASE }}:buildcache,mode=max
           build-args: |
             POSTURE=operational
           secrets: |
