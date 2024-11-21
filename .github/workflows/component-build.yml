@@ -41,7 +41,6 @@ jobs:
         with:
           repository: ${{ inputs.repository || github.repository }}
           token: ${{ secrets.CHECKOUT_TOKEN || github.token }}
-          ref: ${{ inputs.branch }}
 
       - id: 'auth'
         uses: 'google-github-actions/auth@v2'
