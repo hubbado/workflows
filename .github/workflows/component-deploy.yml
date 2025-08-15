@@ -12,6 +12,9 @@ on:
       environment:
         required: true
         type: string
+      image_name:
+        required: false
+        type: string
 
     secrets:
       CLUSTER_NAME:
@@ -28,7 +31,7 @@ on:
 jobs:
   deploy:
     env:
-      IMAGEBASE: europe-docker.pkg.dev/nimble-lead-281209/eu.gcr.io/${{ inputs.component_name }}
+      IMAGEBASE: europe-docker.pkg.dev/nimble-lead-281209/eu.gcr.io/${{ inputs.image_name || inputs.component_name }}
 
     runs-on: self-hosted
 
@@ -62,7 +65,7 @@ jobs:
         run: |
           imagetag=`cat imagetag`
           cd kustomize/${{ inputs.environment }}
-          kustomize edit set image ${{ inputs.component_name }}-image=${{ env.IMAGEBASE }}:$imagetag
+          kustomize edit set image ${{ inputs.image_name || inputs.component_name }}-image=${{ env.IMAGEBASE }}:$imagetag
           kustomize build | kubectl apply --namespace=${{ inputs.namespace }} -f-
 
       - name: Check status
