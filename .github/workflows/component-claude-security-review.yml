@@ -1,0 +1,53 @@
+name: "Component workflow: Claude Security Review"
+
+on:
+  workflow_call:
+    inputs:
+      context_hint:
+        description: "Optional repo-specific guidance appended to the security review prompt"
+        required: false
+        type: string
+        default: ""
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+
+jobs:
+  claude-security-review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Run Claude Security Review
+        id: claude-security-review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            Run the `/security-review` skill on this pull request.
+
+            Focus on the diff. Read surrounding context where needed to understand
+            data flow, trust boundaries, and authorization. Use the repository's
+            CLAUDE.md for conventions.
+
+            ${{ inputs.context_hint }}
+
+            Report findings as a single PR comment. For each finding include:
+            severity, file:line, the vulnerability, and a concrete fix. If no
+            issues are found, post a brief confirmation comment.
+
+            Use `gh pr comment` with your Bash tool to leave the review.
+
+          claude_args: '--allowed-tools "Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*)"'
