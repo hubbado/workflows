@@ -9,10 +9,10 @@ on:
         type: string
         default: ""
       allowed_bots:
-        description: "Comma-separated bot logins (without the [bot] suffix) permitted to trigger the review, or * for all. Empty blocks all bots."
+        description: "Comma-separated bot logins (without the [bot] suffix) permitted to trigger the review, or * for all. Set to an empty string to block all bots."
         required: false
         type: string
-        default: ""
+        default: "hubbado-automation"
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
