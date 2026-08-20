@@ -54,7 +54,7 @@ jobs:
           --health-retries 5
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - id: 'auth'
         uses: 'google-github-actions/auth@v3'
@@ -73,7 +73,7 @@ jobs:
         run: echo "imagetag=${IMAGETAG:-${{ env.branch }}-$(date +%Y-%m-%d-%H-%M-%z |sed -e 's/+//')-$(echo "${{ env.commit_sha }}"|cut -c1-8)}" >> $GITHUB_ENV
 
       - name: Build image and load locally to Docker
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           load: true
