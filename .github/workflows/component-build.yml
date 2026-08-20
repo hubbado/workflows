@@ -46,7 +46,7 @@ jobs:
       id-token: 'write'
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           repository: ${{ inputs.repository || github.repository }}
           token: ${{ secrets.CHECKOUT_TOKEN || github.token }}
@@ -92,7 +92,7 @@ jobs:
       - run: echo ${{ env.imagetag }} > imagetag
 
       - name: Cache imagetag
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         if:  ${{ inputs.cache_image_tag }}
         env:
           cache-name: cache-imagetag
