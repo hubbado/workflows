@@ -71,6 +71,8 @@ jobs:
       pull-requests: read
       issues: read
       id-token: write
+    outputs:
+      conclusion: ${{ steps.claude.outputs.conclusion }}
 
     steps:
       - name: Checkout repository
@@ -79,6 +81,7 @@ jobs:
           fetch-depth: 1
 
       - name: Run Claude Code Review
+        id: claude
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -100,6 +103,8 @@ jobs:
       pull-requests: read
       issues: read
       id-token: write
+    outputs:
+      conclusion: ${{ steps.claude.outputs.conclusion }}
 
     steps:
       - name: Checkout repository
@@ -108,6 +113,7 @@ jobs:
           fetch-depth: 1
 
       - name: Run Claude Security Review
+        id: claude
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -140,6 +146,8 @@ jobs:
       pull-requests: write
       issues: read
       id-token: write
+    outputs:
+      conclusion: ${{ steps.claude.outputs.conclusion }}
     env:
       GH_TOKEN: ${{ github.token }}
       REVIEWED_SHA: ${{ needs.review-state.outputs.reviewed_sha }}
@@ -228,7 +236,9 @@ jobs:
 
   summary:
     needs: [review-state, code-review, security-review, follow-up-review]
-    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') }}
+    # The action skips itself, and reports success, on a PR that changes the calling workflow;
+    # only a review that really ran may move the reviewed commit
+    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && contains(needs.*.outputs.conclusion, 'success') }}
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
