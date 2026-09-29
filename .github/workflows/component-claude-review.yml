@@ -165,10 +165,15 @@ jobs:
           BEFORE: ${{ steps.before.outputs.count }}
         run: |
           denials=$(jq -s 'flatten | [.[] | select(.type? == "result") | .permission_denials[]?]' "$EXECUTION_FILE")
+
+          # The printed text comes from the model, which reads the PR, so workflow commands in it are switched off
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           echo "Blocked tool calls:"
           jq -r 'if length == 0 then "(none)" else .[] | "- \(.tool_name): \((.tool_input.command? // (.tool_input | tostring)) | .[0:300])" end' <<< "$denials"
           echo "Review result:"
           jq -rs 'flatten | [.[] | select(.type? == "result") | .result? // empty] | last // "(none)" | .[0:3000]' "$EXECUTION_FILE"
+          echo "::$stop_token::"
 
           after=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/comments" --paginate --jq "$CLAUDE_REVIEW_COMMENTS_JQ" | awk '{ sum += $1 } END { print sum + 0 }')
           if [ "$(jq length <<< "$denials")" -gt 0 ] && [ "$after" -le "$BEFORE" ]; then
