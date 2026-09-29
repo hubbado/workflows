@@ -1,4 +1,4 @@
-# First review of a PR: Claude Code's /code-review and /security-review, both as inline comments.
+# First review of a PR: Claude Code's /code-review, whose findings a script posts, and /security-review; both inline.
 # On request ("@claude review" comment): a follow-up that resolves fixed findings and reviews only the new commits.
 name: "Component workflow: Claude Review"
 
@@ -36,10 +36,15 @@ env:
         }
       }
     }
+  # Claude posts the security review and follow-up findings; a script posts the code review's, marked with this
+  CODE_REVIEW_FINDING_MARKER: "<!-- claude-review finding -->"
   CLAUDE_FINDINGS_JQ: >-
     [.data.repository.pullRequest.reviewThreads.nodes[]
-    | select(.comments.nodes[0].author.login | test("^claude(\\[bot\\])?$"))
-    | {thread_id: .id, resolved: .isResolved, path, line, finding: .comments.nodes[0].body, url: .comments.nodes[0].url}]
+    | .comments.nodes[0] as $first
+    | ($first.author.login // "") as $author
+    | select(($author | test("^claude(\\[bot\\])?$"))
+        or (($author | test("^github-actions(\\[bot\\])?$")) and ($first.body | contains(env.CODE_REVIEW_FINDING_MARKER))))
+    | {thread_id: .id, resolved: .isResolved, path, line, finding: $first.body, url: $first.url}]
 
 jobs:
   review-state:
@@ -113,23 +118,15 @@ jobs:
       id-token: write
     outputs:
       conclusion: ${{ steps.claude.outputs.conclusion }}
-    env:
-      GH_TOKEN: ${{ github.token }}
-      PR_NUMBER: ${{ needs.review-state.outputs.pr_number }}
-      CLAUDE_REVIEW_COMMENTS_JQ: '[.[] | select(.user.login == "claude[bot]")] | length'
+      findings: ${{ steps.claude.outputs.structured_output }}
 
     steps:
+      # Full history, so the review can diff the whole PR against its base, not only the last commit
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
           ref: ${{ needs.review-state.outputs.head_sha }}
-          fetch-depth: 1
-
-      - name: Count Claude's review comments before the review
-        id: before
-        run: |
-          count=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/comments" --paginate --jq "$CLAUDE_REVIEW_COMMENTS_JQ" | awk '{ sum += $1 } END { print sum + 0 }')
-          echo "count=$count" >> "$GITHUB_OUTPUT"
+          fetch-depth: 0
 
       - name: Run Claude Code Review
         id: claude
@@ -138,49 +135,73 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           allowed_bots: ${{ inputs.allowed_bots }}
           # The built-in command, not the code-review plugin: the plugin skips PRs that it judges trivial.
-          # Flags go before the PR number: everything after the flags is read as the review target,
-          # so the command also takes no guidance.
-          prompt: "/code-review medium --comment ${{ needs.review-state.outputs.pr_number }}"
+          # In the action, --comment does not post, so the review returns its findings and a script posts
+          # them. Everything after the level is read as the review target, so it takes no guidance.
+          prompt: "/code-review medium ${{ needs.review-state.outputs.pr_number }}"
 
           # Settings, not --allowedTools: the review runs as a forked sub-agent, which takes its
-          # permissions from settings. --comment posts through gh api on the pulls comments endpoint.
+          # permissions from settings. It needs no write access.
           settings: |
             {
               "permissions": {
                 "allow": [
                   "Read", "Grep", "Glob",
                   "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)", "Bash(git rev-parse:*)",
-                  "Bash(gh pr view:*)", "Bash(gh pr diff:*)",
-                  "Bash(gh api repos/*/pulls/*/comments *)"
+                  "Bash(gh pr view:*)", "Bash(gh pr diff:*)"
                 ]
               }
             }
 
-      # The action logs only a count of blocked calls, and reports success whatever was blocked, which
-      # would look like a clean PR. A blocked first try is fine when a retry posted, so a block fails the
-      # job only when nothing was posted.
-      - name: Report blocked calls, and fail if a block left the PR without the review
-        if: steps.claude.outputs.execution_file != ''
+          claude_args: >-
+            --json-schema '{"type":"object","properties":{"findings":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to the repository root"},"line":{"type":"integer","description":"Line in the new version of the file"},"body":{"type":"string","description":"The problem and a concrete fix"}},"required":["path","line","body"]}}},"required":["findings"]}'
+
+      # The action logs only a count of blocked calls and hides the review's text
+      - name: Report blocked calls and the review's text
+        if: always() && steps.claude.outputs.execution_file != ''
         env:
           EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
-          BEFORE: ${{ steps.before.outputs.count }}
         run: |
-          denials=$(jq -s 'flatten | [.[] | select(.type? == "result") | .permission_denials[]?]' "$EXECUTION_FILE")
-
           # The printed text comes from the model, which reads the PR, so workflow commands in it are switched off
           stop_token=$(openssl rand -hex 16)
           echo "::stop-commands::$stop_token"
           echo "Blocked tool calls:"
-          jq -r 'if length == 0 then "(none)" else .[] | "- \(.tool_name): \((.tool_input.command? // (.tool_input | tostring)) | .[0:300])" end' <<< "$denials"
+          jq -rs 'flatten | [.[] | select(.type? == "result") | .permission_denials[]?]
+            | if length == 0 then "(none)" else .[] | "- \(.tool_name): \((.tool_input.command? // (.tool_input | tostring)) | .[0:300])" end' "$EXECUTION_FILE"
           echo "Review result:"
           jq -rs 'flatten | [.[] | select(.type? == "result") | .result? // empty] | last // "(none)" | .[0:3000]' "$EXECUTION_FILE"
           echo "::$stop_token::"
 
-          after=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/comments" --paginate --jq "$CLAUDE_REVIEW_COMMENTS_JQ" | awk '{ sum += $1 } END { print sum + 0 }')
-          if [ "$(jq length <<< "$denials")" -gt 0 ] && [ "$after" -le "$BEFORE" ]; then
-            echo "::error::A tool call was blocked and the review posted nothing; the blocked calls are listed above"
-            exit 1
-          fi
+  # A job of its own, so the job that runs the model never holds a token that can write to the PR
+  post-code-review-findings:
+    needs: [review-state, code-review]
+    if: needs.code-review.outputs.findings != ''
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR_NUMBER: ${{ needs.review-state.outputs.pr_number }}
+      HEAD_SHA: ${{ needs.review-state.outputs.head_sha }}
+      FINDINGS: ${{ needs.code-review.outputs.findings }}
+
+    steps:
+      - name: Post each finding on its line, or on the PR when GitHub refuses the line
+        run: |
+          jq -c '.findings[]' <<< "$FINDINGS" | while read -r finding; do
+            path=$(jq -r '.path' <<< "$finding")
+            path=${path#"$GITHUB_WORKSPACE/"}
+            line=$(jq -r '.line' <<< "$finding")
+            text=$(jq -r '.body' <<< "$finding")
+
+            if ! gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/comments" \
+              -f commit_id="$HEAD_SHA" -f path="$path" -F line="$line" -f side=RIGHT \
+              -f body="**Claude code review**"$'\n\n'"$text"$'\n\n'"$CODE_REVIEW_FINDING_MARKER" --silent; then
+              # A line outside the diff is refused; the finding still reaches the PR, but as a thread nobody can resolve
+              gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+                --body "**Claude code review** of \`$path\` line $line"$'\n\n'"$text"
+            fi
+          done
 
   security-review:
     needs: review-state
@@ -346,7 +367,7 @@ jobs:
           done
 
   summary:
-    needs: [review-state, code-review, security-review, follow-up-review, resolve-fixed-findings]
+    needs: [review-state, code-review, post-code-review-findings, security-review, follow-up-review, resolve-fixed-findings]
     # The action skips itself, and reports success, on a PR that changes the calling workflow;
     # only a review that really ran may move the reviewed commit
     if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && contains(needs.*.outputs.conclusion, 'success') }}
