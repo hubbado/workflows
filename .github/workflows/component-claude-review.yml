@@ -178,8 +178,8 @@ jobs:
                problem is gone, not when nearby code merely changed.
 
             2. Review every change in the diff for new issues, however small the change:
-               bugs that will produce wrong results, and security vulnerabilities with a
-               clear way to exploit them. Use the CLAUDE.md files for conventions. Flag
+               ${{ needs.review-state.outputs.mode == 'first' && 'bugs that will produce wrong results. A separate security review runs alongside this first review, so leave security vulnerabilities to it.' || 'bugs that will produce wrong results, and security vulnerabilities with a clear way to exploit them.' }}
+               Use the CLAUDE.md files for conventions. Flag
                only issues you are certain of. Do not flag style, nitpicks, or anything a
                linter catches. Do not flag an issue that any finding in findings.json
                already covers, resolved or not.
