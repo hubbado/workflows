@@ -1,12 +1,12 @@
-# First review of a PR: Claude Code's /code-review and /security-review, both as inline comments.
-# On request ("@claude review" comment): a follow-up that resolves fixed findings and reviews only the new commits.
+# Reviews a PR as inline comments: one review prompt for the first review and for each follow-up that
+# "@claude review" asks for, plus /security-review on the first review. A script resolves fixed findings.
 name: "Component workflow: Claude Review"
 
 on:
   workflow_call:
     inputs:
       context_hint:
-        description: "Optional repo-specific guidance appended to the security review prompt"
+        description: "Optional repo-specific guidance for the reviews, such as where authorization lives"
         required: false
         type: string
         default: ""
@@ -38,13 +38,18 @@ env:
     }
   CLAUDE_FINDINGS_JQ: >-
     [.data.repository.pullRequest.reviewThreads.nodes[]
-    | select(.comments.nodes[0].author.login | test("^claude(\\[bot\\])?$"))
+    | select(.comments.nodes[0].author.login // "" | test("^claude(\\[bot\\])?$"))
     | {thread_id: .id, resolved: .isResolved, path, line, finding: .comments.nodes[0].body, url: .comments.nodes[0].url}]
+  # Heads each comment the review job posts, so its comments can be counted apart from the security review's.
+  # A visible heading, because the inline-comment tool strips HTML comments.
+  REVIEW_COMMENT_HEADING: "**Code review**"
 
 jobs:
   review-state:
     runs-on: ubuntu-latest
     permissions:
+      # read: the compare that finds changed files reads commits
+      contents: read
       # write: reacting to a comment on a PR needs it, even with issues: write
       pull-requests: write
       issues: write
@@ -91,20 +96,29 @@ jobs:
             | tail -n 1)
           echo "reviewed_sha=$reviewed_sha" >> "$GITHUB_OUTPUT"
 
+          # New commits can still change nothing, for example an empty commit or a rebase; a failed compare,
+          # such as after a force push, counts as a change, so the follow-up reviews the whole PR again
+          changed_files=unknown
+          if [ -n "$reviewed_sha" ]; then
+            changed_files=$(gh api "repos/$GITHUB_REPOSITORY/compare/$reviewed_sha...$head_sha" --jq '.files | length' 2> /dev/null) \
+              || changed_files=unknown
+            echo "Files changed since the last review ($reviewed_sha): $changed_files"
+          fi
+
           if [ -z "$reviewed_sha" ]; then
             echo "mode=first" >> "$GITHUB_OUTPUT"
-          elif [ "$reviewed_sha" = "$head_sha" ]; then
+          elif [ "$changed_files" = 0 ]; then
             if [ -n "$COMMENT_ID" ]; then
               gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
-                --body "No new commits since the last Claude review (${head_sha:0:7}), so there is nothing new to review."
+                --body "No changes since the last Claude review (${reviewed_sha:0:7}), so there is nothing new to review."
             fi
           else
             echo "mode=follow-up" >> "$GITHUB_OUTPUT"
           fi
 
-  code-review:
+  review:
     needs: review-state
-    if: needs.review-state.outputs.mode == 'first'
+    if: needs.review-state.outputs.mode != ''
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -113,10 +127,14 @@ jobs:
       id-token: write
     outputs:
       conclusion: ${{ steps.claude.outputs.conclusion }}
+      result: ${{ steps.claude.outputs.structured_output }}
     env:
       GH_TOKEN: ${{ github.token }}
+      MODE: ${{ needs.review-state.outputs.mode }}
       PR_NUMBER: ${{ needs.review-state.outputs.pr_number }}
-      CLAUDE_REVIEW_COMMENTS_JQ: '[.[] | select(.user.login == "claude[bot]")] | length'
+      HEAD_SHA: ${{ needs.review-state.outputs.head_sha }}
+      REVIEWED_SHA: ${{ needs.review-state.outputs.reviewed_sha }}
+      MARKED_COMMENTS_JQ: '[.[] | select(.user.login == "claude[bot]" and (.body | contains(env.REVIEW_COMMENT_HEADING)))] | length'
 
     steps:
       - name: Checkout repository
@@ -125,62 +143,106 @@ jobs:
           ref: ${{ needs.review-state.outputs.head_sha }}
           fetch-depth: 1
 
-      - name: Count Claude's review comments before the review
-        id: before
+      - name: Collect the findings already on the PR, and the changes to review
+        id: collect
         run: |
-          count=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/comments" --paginate --jq "$CLAUDE_REVIEW_COMMENTS_JQ" | awk '{ sum += $1 } END { print sum + 0 }')
-          echo "count=$count" >> "$GITHUB_OUTPUT"
+          mkdir -p .claude-review
+          gh api graphql -f owner="${GITHUB_REPOSITORY%/*}" -f name="${GITHUB_REPOSITORY#*/}" -F pr="$PR_NUMBER" \
+            -f query="$CLAUDE_FINDINGS_QUERY" --jq "$CLAUDE_FINDINGS_JQ" > .claude-review/findings.json
 
-      - name: Run Claude Code Review
+          # A first review covers the whole PR; a follow-up covers the commits since the last review,
+          # or the whole PR again when that commit is gone, for example after a force push
+          if [ "$MODE" = first ] || ! gh api -H "Accept: application/vnd.github.diff" \
+            "repos/$GITHUB_REPOSITORY/compare/$REVIEWED_SHA...$HEAD_SHA" > .claude-review/changes.diff; then
+            gh pr diff "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" > .claude-review/changes.diff
+          fi
+
+          if [ -s .claude-review/changes.diff ]; then
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          fi
+
+          count=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/comments" --paginate --jq "$MARKED_COMMENTS_JQ" | awk '{ sum += $1 } END { print sum + 0 }')
+          echo "marked_before=$count" >> "$GITHUB_OUTPUT"
+
+      - name: Run Claude review
         id: claude
+        if: steps.collect.outputs.has_changes == 'true'
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           allowed_bots: ${{ inputs.allowed_bots }}
-          # The built-in command, not the code-review plugin: the plugin skips PRs that it judges trivial.
-          # Flags go before the PR number: everything after the flags is read as the review target,
-          # so the command also takes no guidance.
-          prompt: "/code-review medium --comment ${{ needs.review-state.outputs.pr_number }}"
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ needs.review-state.outputs.pr_number }}
 
-          # Settings, not --allowedTools: the review runs as a forked sub-agent, which takes its
-          # permissions from settings. --comment posts through gh api on the pulls comments endpoint.
-          settings: |
-            {
-              "permissions": {
-                "allow": [
-                  "Read", "Grep", "Glob",
-                  "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)", "Bash(git rev-parse:*)",
-                  "Bash(gh pr view:*)", "Bash(gh pr diff:*)",
-                  "Bash(gh api repos/*/pulls/*/comments *)"
-                ]
-              }
-            }
+            ${{ needs.review-state.outputs.mode == 'first' && 'This is the first review of this pull request.' || 'You reviewed this pull request before, and new commits have arrived since.' }}
 
-      # The action logs only a count of blocked calls, and reports success whatever was blocked, which
-      # would look like a clean PR. A blocked first try is fine when a retry posted, so a block fails the
-      # job only when nothing was posted.
-      - name: Report blocked calls, and fail if a block left the PR without the review
-        if: steps.claude.outputs.execution_file != ''
+            `.claude-review/findings.json` lists the findings already on the pull request:
+            each has a thread_id, whether it is resolved, the file and line, and its text.
+            `.claude-review/changes.diff` is the diff to review: the whole pull request on a
+            first review, or the commits since the last review on a follow-up.
+
+            Do two things:
+
+            1. For each finding that is not resolved, read the current code and decide
+               whether the changes fix it. Report a finding as fixed only when the
+               problem is gone, not when nearby code merely changed.
+
+            2. Review every change in the diff for new issues, however small the change:
+               ${{ needs.review-state.outputs.mode == 'first' && 'bugs that will produce wrong results. A separate security review runs alongside this first review, so leave security vulnerabilities to it.' || 'bugs that will produce wrong results, and security vulnerabilities with a clear way to exploit them.' }}
+               Use the CLAUDE.md files for conventions. Flag
+               only issues you are certain of. Do not flag style, nitpicks, or anything a
+               linter catches. Do not flag an issue that any finding in findings.json
+               already covers, resolved or not.
+
+               Post each new issue as an inline comment on the line where it occurs,
+               using `mcp__github_inline_comment__create_inline_comment` with
+               `confirmed: true`, on the line number in the current file, not a position in
+               the diff: read the file to check it. Start each comment with this line, exactly as written:
+               ${{ env.REVIEW_COMMENT_HEADING }}
+               Then give a brief description and a concrete fix.
+
+            ${{ inputs.context_hint }}
+
+            ${{ needs.review-state.outputs.guidance && format('Guidance from the person who asked for this review: {0}', needs.review-state.outputs.guidance) || '' }}
+
+            Post no other comments. Return the thread_id of each fixed finding with a
+            one-sentence reason, and the number of new issues you posted.
+
+          claude_args: >-
+            --allowedTools "Read,Grep,Glob,mcp__github_inline_comment__create_inline_comment"
+            --json-schema '{"type":"object","properties":{"fixed":{"type":"array","items":{"type":"object","properties":{"thread_id":{"type":"string"},"reason":{"type":"string"}},"required":["thread_id","reason"]}},"posted":{"type":"integer","minimum":0}},"required":["fixed","posted"]}'
+
+      # A review that says it posted findings which never appeared would otherwise look like a clean PR
+      - name: Check that the posted findings reached the PR
+        if: steps.claude.outputs.structured_output != ''
+        env:
+          RESULT: ${{ steps.claude.outputs.structured_output }}
+          MARKED_BEFORE: ${{ steps.collect.outputs.marked_before }}
+        run: |
+          posted=$(jq -r '.posted' <<< "$RESULT")
+          after=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/comments" --paginate --jq "$MARKED_COMMENTS_JQ" | awk '{ sum += $1 } END { print sum + 0 }')
+          echo "The review reports $posted new finding(s); $((after - MARKED_BEFORE)) appeared on the PR"
+          if [ $((after - MARKED_BEFORE)) -lt "$posted" ]; then
+            echo "::error::The review reports $posted new finding(s), but only $((after - MARKED_BEFORE)) reached the PR"
+            exit 1
+          fi
+
+      # The action logs only a count of blocked calls and hides the review's text
+      - name: Report blocked calls and the review's text
+        if: always() && steps.claude.outputs.execution_file != ''
         env:
           EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
-          BEFORE: ${{ steps.before.outputs.count }}
         run: |
-          denials=$(jq -s 'flatten | [.[] | select(.type? == "result") | .permission_denials[]?]' "$EXECUTION_FILE")
-
           # The printed text comes from the model, which reads the PR, so workflow commands in it are switched off
           stop_token=$(openssl rand -hex 16)
           echo "::stop-commands::$stop_token"
           echo "Blocked tool calls:"
-          jq -r 'if length == 0 then "(none)" else .[] | "- \(.tool_name): \((.tool_input.command? // (.tool_input | tostring)) | .[0:300])" end' <<< "$denials"
+          jq -rs 'flatten | [.[] | select(.type? == "result") | .permission_denials[]?]
+            | if length == 0 then "(none)" else .[] | "- \(.tool_name): \((.tool_input.command? // (.tool_input | tostring)) | .[0:300])" end' "$EXECUTION_FILE"
           echo "Review result:"
           jq -rs 'flatten | [.[] | select(.type? == "result") | .result? // empty] | last // "(none)" | .[0:3000]' "$EXECUTION_FILE"
           echo "::$stop_token::"
-
-          after=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/comments" --paginate --jq "$CLAUDE_REVIEW_COMMENTS_JQ" | awk '{ sum += $1 } END { print sum + 0 }')
-          if [ "$(jq length <<< "$denials")" -gt 0 ] && [ "$after" -le "$BEFORE" ]; then
-            echo "::error::A tool call was blocked and the review posted nothing; the blocked calls are listed above"
-            exit 1
-          fi
 
   security-review:
     needs: review-state
@@ -221,110 +283,30 @@ jobs:
 
             ${{ needs.review-state.outputs.guidance && format('Guidance from the person who asked for this review: {0}', needs.review-state.outputs.guidance) || '' }}
 
-            Post each finding as an inline comment on the line where it occurs, using
-            `mcp__github_inline_comment__create_inline_comment` with `confirmed: true`.
-            In each comment give the severity, the vulnerability, and a concrete fix.
-            If no issues are found, post one brief confirmation with `gh pr comment`.
+            Post each security vulnerability as an inline comment on the line where it
+            occurs, using `mcp__github_inline_comment__create_inline_comment` with
+            `confirmed: true`. In each comment give the severity, the vulnerability, and a
+            concrete fix. Post nothing else: no summary, no confirmation when you find
+            nothing, and no notes on issues that are not security vulnerabilities.
 
-          claude_args: '--allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"'
+          claude_args: '--allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*)"'
 
-  follow-up-review:
-    needs: review-state
-    if: needs.review-state.outputs.mode == 'follow-up'
+  finish:
+    needs: [review-state, review, security-review]
+    # The action skips itself, and reports success, on a PR that changes the calling workflow;
+    # only a review that really ran may resolve findings or move the reviewed commit
+    if: ${{ !cancelled() && needs.review.outputs.conclusion == 'success' && needs.review.result == 'success' && needs.security-review.result != 'failure' }}
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-      pull-requests: read
-      issues: read
-      id-token: write
-    outputs:
-      conclusion: ${{ steps.claude.outputs.conclusion }}
-      fixed: ${{ steps.claude.outputs.structured_output }}
-    env:
-      GH_TOKEN: ${{ github.token }}
-      PR_NUMBER: ${{ needs.review-state.outputs.pr_number }}
-      HEAD_SHA: ${{ needs.review-state.outputs.head_sha }}
-      REVIEWED_SHA: ${{ needs.review-state.outputs.reviewed_sha }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.review-state.outputs.head_sha }}
-          fetch-depth: 1
-
-      - name: Collect earlier findings and the new commits
-        id: collect
-        run: |
-          mkdir -p .claude-review
-          gh api graphql -f owner="${GITHUB_REPOSITORY%/*}" -f name="${GITHUB_REPOSITORY#*/}" -F pr="$PR_NUMBER" \
-            -f query="$CLAUDE_FINDINGS_QUERY" --jq "$CLAUDE_FINDINGS_JQ" > .claude-review/findings.json
-
-          if ! gh api -H "Accept: application/vnd.github.diff" \
-            "repos/$GITHUB_REPOSITORY/compare/$REVIEWED_SHA...$HEAD_SHA" > .claude-review/new-commits.diff; then
-            # The last reviewed commit is gone, for example after a force push
-            gh pr diff "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" > .claude-review/new-commits.diff
-          fi
-
-          if [ -s .claude-review/new-commits.diff ]; then
-            echo "has_changes=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Run Claude follow-up review
-        id: claude
-        if: steps.collect.outputs.has_changes == 'true'
-        uses: anthropics/claude-code-action@v1
-        with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          allowed_bots: ${{ inputs.allowed_bots }}
-          prompt: |
-            REPO: ${{ github.repository }}
-            PR NUMBER: ${{ needs.review-state.outputs.pr_number }}
-
-            You reviewed this pull request before, and new commits have arrived since.
-
-            `.claude-review/findings.json` lists the findings from the earlier reviews:
-            each has a thread_id, whether it is resolved, the file and line, and its text.
-            `.claude-review/new-commits.diff` is the diff of the commits since the last review.
-
-            Do two things:
-
-            1. For each finding that is not resolved, read the current code and decide
-               whether the new commits fix it. Report a finding as fixed only when the
-               problem is gone, not when nearby code merely changed.
-
-            2. Review the new commits for new issues: bugs that will produce wrong
-               results, and security vulnerabilities with a clear way to exploit them.
-               Use the CLAUDE.md files for conventions. Flag only issues you are certain
-               of. Do not flag style, nitpicks, or anything a linter catches. Do not flag
-               an issue that any finding in findings.json already covers, resolved or not.
-
-               Post each new issue as an inline comment on the line where it occurs,
-               using `mcp__github_inline_comment__create_inline_comment` with
-               `confirmed: true`. Give a brief description and a concrete fix.
-
-            ${{ needs.review-state.outputs.guidance && format('Guidance from the person who asked for this review: {0}', needs.review-state.outputs.guidance) || '' }}
-
-            Post no other comments. Return the thread_id of each fixed finding with a
-            one-sentence reason.
-
-          claude_args: >-
-            --allowedTools "Read,Grep,Glob,mcp__github_inline_comment__create_inline_comment"
-            --json-schema '{"type":"object","properties":{"fixed":{"type":"array","items":{"type":"object","properties":{"thread_id":{"type":"string"},"reason":{"type":"string"}},"required":["thread_id","reason"]}}},"required":["fixed"]}'
-
-  # A job of its own: resolveReviewThread needs contents: write, which the job that runs the model must not hold
-  resolve-fixed-findings:
-    needs: [review-state, follow-up-review]
-    if: needs.follow-up-review.outputs.fixed != ''
-    runs-on: ubuntu-latest
-    permissions:
+      # contents: write because resolveReviewThread needs it; this job runs only this script, never the model
       contents: write
       pull-requests: write
+      issues: write
     env:
       GH_TOKEN: ${{ github.token }}
       PR_NUMBER: ${{ needs.review-state.outputs.pr_number }}
       HEAD_SHA: ${{ needs.review-state.outputs.head_sha }}
-      RESULT: ${{ needs.follow-up-review.outputs.fixed }}
+      RESULT: ${{ needs.review.outputs.result }}
       RESOLVE_FINDING_MUTATION: |
         mutation($id: ID!, $body: String!) {
           addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $id, body: $body}) { comment { id } }
@@ -345,21 +327,6 @@ jobs:
               -f query="$RESOLVE_FINDING_MUTATION" > /dev/null
           done
 
-  summary:
-    needs: [review-state, code-review, security-review, follow-up-review, resolve-fixed-findings]
-    # The action skips itself, and reports success, on a PR that changes the calling workflow;
-    # only a review that really ran may move the reviewed commit
-    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && contains(needs.*.outputs.conclusion, 'success') }}
-    runs-on: ubuntu-latest
-    permissions:
-      pull-requests: write
-      issues: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-      PR_NUMBER: ${{ needs.review-state.outputs.pr_number }}
-      HEAD_SHA: ${{ needs.review-state.outputs.head_sha }}
-
-    steps:
       - name: Post the summary below the request it answers, and delete the earlier one
         run: |
           open_findings=$(gh api graphql -f owner="${GITHUB_REPOSITORY%/*}" -f name="${GITHUB_REPOSITORY#*/}" -F pr="$PR_NUMBER" \
