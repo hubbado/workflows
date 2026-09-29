@@ -71,9 +71,10 @@ jobs:
 
       - name: Set imagetag
         # A Docker tag accepts only [A-Za-z0-9._-], while a branch name can carry
-        # more than that, so anything else becomes a hyphen.
+        # more than that, so anything else becomes a hyphen. The branch is read from the
+        # environment, not pasted into the script, so a branch name cannot run as a command.
         run: |
-          branch_tag=$(echo "${{ env.branch }}" | sed -e 's|[^A-Za-z0-9._-]|-|g')
+          branch_tag=${branch//[^A-Za-z0-9._-]/-}
           echo "imagetag=${IMAGETAG:-${branch_tag}-$(date +%Y-%m-%d-%H-%M-%z |sed -e 's/+//')-$(echo "${{ env.commit_sha }}"|cut -c1-8)}" >> $GITHUB_ENV
 
       - name: Build image and load locally to Docker
