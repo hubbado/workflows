@@ -138,8 +138,9 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           allowed_bots: ${{ inputs.allowed_bots }}
           # The built-in command, not the code-review plugin: the plugin skips PRs that it judges trivial.
-          # It takes no guidance: everything after the flags is read as the review target.
-          prompt: "/code-review medium ${{ needs.review-state.outputs.pr_number }} --comment"
+          # Flags go before the PR number: everything after the flags is read as the review target,
+          # so the command also takes no guidance.
+          prompt: "/code-review medium --comment ${{ needs.review-state.outputs.pr_number }}"
 
           # Settings, not --allowedTools: the review runs as a forked sub-agent, which takes its
           # permissions from settings. --comment posts through gh api on the pulls comments endpoint.
