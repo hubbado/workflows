@@ -155,19 +155,29 @@ jobs:
               }
             }
 
-      # A blocked post still lets the action report success, which would look like a clean PR.
-      # A blocked first try is fine when a retry posted, so only a block with nothing posted fails.
-      - name: Fail if the review was blocked from posting its findings
+      # The action logs only a count of blocked calls, and reports success whatever was blocked, which
+      # would look like a clean PR. A blocked first try is fine when a retry posted, so a block fails the
+      # job only when nothing was posted.
+      - name: Report blocked calls, and fail if a block left the PR without the review
         if: steps.claude.outputs.execution_file != ''
         env:
           EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
           BEFORE: ${{ steps.before.outputs.count }}
         run: |
-          blocked=$(jq -s 'flatten | [.[] | select(.type? == "result") | .permission_denials[]?
-            | select((.tool_input.command? // "") | test("gh api"))] | length' "$EXECUTION_FILE")
+          denials=$(jq -s 'flatten | [.[] | select(.type? == "result") | .permission_denials[]?]' "$EXECUTION_FILE")
+
+          # The printed text comes from the model, which reads the PR, so workflow commands in it are switched off
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
+          echo "Blocked tool calls:"
+          jq -r 'if length == 0 then "(none)" else .[] | "- \(.tool_name): \((.tool_input.command? // (.tool_input | tostring)) | .[0:300])" end' <<< "$denials"
+          echo "Review result:"
+          jq -rs 'flatten | [.[] | select(.type? == "result") | .result? // empty] | last // "(none)" | .[0:3000]' "$EXECUTION_FILE"
+          echo "::$stop_token::"
+
           after=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/comments" --paginate --jq "$CLAUDE_REVIEW_COMMENTS_JQ" | awk '{ sum += $1 } END { print sum + 0 }')
-          if [ "$blocked" -gt 0 ] && [ "$after" -le "$BEFORE" ]; then
-            echo "::error::The review was blocked from posting and posted nothing; its findings are missing from the PR"
+          if [ "$(jq length <<< "$denials")" -gt 0 ] && [ "$after" -le "$BEFORE" ]; then
+            echo "::error::A tool call was blocked and the review posted nothing; the blocked calls are listed above"
             exit 1
           fi
 
