@@ -48,6 +48,8 @@ jobs:
   review-state:
     runs-on: ubuntu-latest
     permissions:
+      # read: the compare that finds changed files reads commits
+      contents: read
       # write: reacting to a comment on a PR needs it, even with issues: write
       pull-requests: write
       issues: write
@@ -100,6 +102,7 @@ jobs:
           if [ -n "$reviewed_sha" ]; then
             changed_files=$(gh api "repos/$GITHUB_REPOSITORY/compare/$reviewed_sha...$head_sha" --jq '.files | length' 2> /dev/null) \
               || changed_files=unknown
+            echo "Files changed since the last review ($reviewed_sha): $changed_files"
           fi
 
           if [ -z "$reviewed_sha" ]; then
