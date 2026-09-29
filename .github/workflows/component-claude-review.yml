@@ -1,4 +1,4 @@
-# First review of a PR: Anthropic's code-review plugin, then /security-review, both as inline comments.
+# First review of a PR: Claude Code's /code-review and /security-review, both as inline comments.
 # On request ("@claude review" comment): a follow-up that resolves fixed findings and reviews only the new commits.
 name: "Component workflow: Claude Review"
 
@@ -127,18 +127,15 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           allowed_bots: ${{ inputs.allowed_bots }}
-          plugin_marketplaces: "https://github.com/anthropics/claude-code.git"
-          plugins: "code-review@claude-code-plugins"
-          prompt: |
-            /code-review:code-review --comment ${{ github.repository }}/pull/${{ needs.review-state.outputs.pr_number }} Review this pull request even if it looks trivial. ${{ needs.review-state.outputs.guidance }}
+          # The built-in command, not the code-review plugin: the plugin skips PRs that it judges trivial.
+          # It takes no guidance: everything after the flags is read as the review target.
+          prompt: "/code-review medium ${{ needs.review-state.outputs.pr_number }} --comment"
 
-          # The action starts the inline-comment MCP server only when claude_args names its tool
-          claude_args: '--allowedTools "mcp__github_inline_comment__create_inline_comment"'
+          claude_args: '--allowedTools "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(gh pr view:*),Bash(gh pr diff:*)"'
 
-  # Runs after the code review because the plugin stops if Claude has already commented on the PR
   security-review:
-    needs: [review-state, code-review]
-    if: ${{ !cancelled() && needs.review-state.outputs.mode == 'first' }}
+    needs: review-state
+    if: needs.review-state.outputs.mode == 'first'
     runs-on: ubuntu-latest
     permissions:
       contents: read
