@@ -45,7 +45,8 @@ jobs:
   review-state:
     runs-on: ubuntu-latest
     permissions:
-      pull-requests: read
+      # write: reacting to a comment on a PR needs it, even with issues: write
+      pull-requests: write
       issues: write
     outputs:
       mode: ${{ steps.state.outputs.mode }}
@@ -73,7 +74,8 @@ jobs:
               echo "$COMMENTER has $permission access; a review needs write access"
               exit 0
             fi
-            gh api -X POST "repos/$GITHUB_REPOSITORY/issues/comments/$COMMENT_ID/reactions" -f content=eyes > /dev/null
+            gh api -X POST "repos/$GITHUB_REPOSITORY/issues/comments/$COMMENT_ID/reactions" -f content=eyes > /dev/null \
+              || echo "Could not react to the comment; the review goes on"
 
             # Everything after "@claude review" is guidance for this review
             guidance=$(printf '%s' "${COMMENT_BODY:14}" | sed -e '1s/^[[:space:][:punct:]]*//')
