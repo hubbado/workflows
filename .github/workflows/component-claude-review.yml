@@ -113,6 +113,10 @@ jobs:
       id-token: write
     outputs:
       conclusion: ${{ steps.claude.outputs.conclusion }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR_NUMBER: ${{ needs.review-state.outputs.pr_number }}
+      CLAUDE_REVIEW_COMMENTS_JQ: '[.[] | select(.user.login == "claude[bot]")] | length'
 
     steps:
       - name: Checkout repository
@@ -120,6 +124,12 @@ jobs:
         with:
           ref: ${{ needs.review-state.outputs.head_sha }}
           fetch-depth: 1
+
+      - name: Count Claude's review comments before the review
+        id: before
+        run: |
+          count=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/comments" --paginate --jq "$CLAUDE_REVIEW_COMMENTS_JQ" | awk '{ sum += $1 } END { print sum + 0 }')
+          echo "count=$count" >> "$GITHUB_OUTPUT"
 
       - name: Run Claude Code Review
         id: claude
@@ -131,7 +141,35 @@ jobs:
           # It takes no guidance: everything after the flags is read as the review target.
           prompt: "/code-review medium ${{ needs.review-state.outputs.pr_number }} --comment"
 
-          claude_args: '--allowedTools "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(gh pr view:*),Bash(gh pr diff:*)"'
+          # Settings, not --allowedTools: the review runs as a forked sub-agent, which takes its
+          # permissions from settings. --comment posts through gh api on the pulls comments endpoint.
+          settings: |
+            {
+              "permissions": {
+                "allow": [
+                  "Read", "Grep", "Glob",
+                  "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)", "Bash(git rev-parse:*)",
+                  "Bash(gh pr view:*)", "Bash(gh pr diff:*)",
+                  "Bash(gh api repos/*/pulls/*/comments *)"
+                ]
+              }
+            }
+
+      # A blocked post still lets the action report success, which would look like a clean PR.
+      # A blocked first try is fine when a retry posted, so only a block with nothing posted fails.
+      - name: Fail if the review was blocked from posting its findings
+        if: steps.claude.outputs.execution_file != ''
+        env:
+          EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
+          BEFORE: ${{ steps.before.outputs.count }}
+        run: |
+          blocked=$(jq -s 'flatten | [.[] | select(.type? == "result") | .permission_denials[]?
+            | select((.tool_input.command? // "") | test("gh api"))] | length' "$EXECUTION_FILE")
+          after=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/comments" --paginate --jq "$CLAUDE_REVIEW_COMMENTS_JQ" | awk '{ sum += $1 } END { print sum + 0 }')
+          if [ "$blocked" -gt 0 ] && [ "$after" -le "$BEFORE" ]; then
+            echo "::error::The review was blocked from posting and posted nothing; its findings are missing from the PR"
+            exit 1
+          fi
 
   security-review:
     needs: review-state
