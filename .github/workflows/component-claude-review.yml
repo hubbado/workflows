@@ -94,12 +94,20 @@ jobs:
             | tail -n 1)
           echo "reviewed_sha=$reviewed_sha" >> "$GITHUB_OUTPUT"
 
+          # New commits can still change nothing, for example an empty commit or a rebase; a failed compare,
+          # such as after a force push, counts as a change, so the follow-up reviews the whole PR again
+          changed_files=unknown
+          if [ -n "$reviewed_sha" ]; then
+            changed_files=$(gh api "repos/$GITHUB_REPOSITORY/compare/$reviewed_sha...$head_sha" --jq '.files | length' 2> /dev/null) \
+              || changed_files=unknown
+          fi
+
           if [ -z "$reviewed_sha" ]; then
             echo "mode=first" >> "$GITHUB_OUTPUT"
-          elif [ "$reviewed_sha" = "$head_sha" ]; then
+          elif [ "$changed_files" = 0 ]; then
             if [ -n "$COMMENT_ID" ]; then
               gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
-                --body "No new commits since the last Claude review (${head_sha:0:7}), so there is nothing new to review."
+                --body "No changes since the last Claude review (${reviewed_sha:0:7}), so there is nothing new to review."
             fi
           else
             echo "mode=follow-up" >> "$GITHUB_OUTPUT"
