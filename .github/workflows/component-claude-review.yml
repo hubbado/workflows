@@ -1,0 +1,262 @@
+# First review of a PR: Anthropic's code-review plugin, then /security-review, both as inline comments.
+# Each later push: a follow-up that resolves fixed findings and reviews only the new commits.
+name: "Component workflow: Claude Review"
+
+on:
+  workflow_call:
+    inputs:
+      context_hint:
+        description: "Optional repo-specific guidance appended to the security review prompt"
+        required: false
+        type: string
+        default: ""
+      allowed_bots:
+        description: "Comma-separated bot logins (without the [bot] suffix) permitted to trigger the review, or * for all. Set to an empty string to block all bots."
+        required: false
+        type: string
+        default: "hubbado-automation"
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+
+env:
+  PR_NUMBER: ${{ github.event.pull_request.number }}
+  HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+  CLAUDE_FINDINGS_QUERY: |
+    query($owner: String!, $name: String!, $pr: Int!) {
+      repository(owner: $owner, name: $name) {
+        pullRequest(number: $pr) {
+          reviewThreads(first: 100) {
+            nodes {
+              id
+              isResolved
+              path
+              line
+              comments(first: 1) { nodes { author { login } body url } }
+            }
+          }
+        }
+      }
+    }
+  CLAUDE_FINDINGS_JQ: >-
+    [.data.repository.pullRequest.reviewThreads.nodes[]
+    | select(.comments.nodes[0].author.login | test("^claude(\\[bot\\])?$"))
+    | {thread_id: .id, resolved: .isResolved, path, line, finding: .comments.nodes[0].body, url: .comments.nodes[0].url}]
+
+jobs:
+  review-state:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      reviewed_sha: ${{ steps.state.outputs.reviewed_sha }}
+
+    steps:
+      - name: Find the last reviewed commit
+        id: state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          reviewed_sha=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" --paginate \
+            --jq '.[] | select(.user.login == "github-actions[bot]") | .body | capture("<!-- claude-review reviewed=(?<sha>[0-9a-f]{40}) -->").sha' \
+            | tail -n 1)
+          echo "reviewed_sha=$reviewed_sha" >> "$GITHUB_OUTPUT"
+
+  code-review:
+    needs: review-state
+    if: needs.review-state.outputs.reviewed_sha == ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Run Claude Code Review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          allowed_bots: ${{ inputs.allowed_bots }}
+          plugin_marketplaces: "https://github.com/anthropics/claude-code.git"
+          plugins: "code-review@claude-code-plugins"
+          prompt: "/code-review:code-review --comment ${{ github.repository }}/pull/${{ github.event.pull_request.number }} Review this pull request even if it looks trivial."
+
+          # The action starts the inline-comment MCP server only when claude_args names its tool
+          claude_args: '--allowedTools "mcp__github_inline_comment__create_inline_comment"'
+
+  # Runs after the code review because the plugin stops if Claude has already commented on the PR
+  security-review:
+    needs: [review-state, code-review]
+    if: ${{ !cancelled() && needs.review-state.outputs.reviewed_sha == '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Run Claude Security Review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          allowed_bots: ${{ inputs.allowed_bots }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            Run the `/security-review` skill on this pull request.
+
+            Focus on the diff. Read surrounding context where needed to understand
+            data flow, trust boundaries, and authorization. Use the repository's
+            CLAUDE.md for conventions.
+
+            ${{ inputs.context_hint }}
+
+            Post each finding as an inline comment on the line where it occurs, using
+            `mcp__github_inline_comment__create_inline_comment` with `confirmed: true`.
+            In each comment give the severity, the vulnerability, and a concrete fix.
+            If no issues are found, post one brief confirmation with `gh pr comment`.
+
+          claude_args: '--allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"'
+
+  follow-up-review:
+    needs: review-state
+    if: needs.review-state.outputs.reviewed_sha != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: read
+      id-token: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REVIEWED_SHA: ${{ needs.review-state.outputs.reviewed_sha }}
+      RESOLVE_FINDING_MUTATION: |
+        mutation($id: ID!, $body: String!) {
+          addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $id, body: $body}) { comment { id } }
+          resolveReviewThread(input: {threadId: $id}) { thread { isResolved } }
+        }
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Collect earlier findings and the new commits
+        id: collect
+        run: |
+          mkdir -p .claude-review
+          gh api graphql -f owner="${GITHUB_REPOSITORY%/*}" -f name="${GITHUB_REPOSITORY#*/}" -F pr="$PR_NUMBER" \
+            -f query="$CLAUDE_FINDINGS_QUERY" --jq "$CLAUDE_FINDINGS_JQ" > .claude-review/findings.json
+
+          if ! gh api -H "Accept: application/vnd.github.diff" \
+            "repos/$GITHUB_REPOSITORY/compare/$REVIEWED_SHA...$HEAD_SHA" > .claude-review/new-commits.diff; then
+            # The last reviewed commit is gone, for example after a force push
+            gh pr diff "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" > .claude-review/new-commits.diff
+          fi
+
+          if [ -s .claude-review/new-commits.diff ]; then
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run Claude follow-up review
+        id: claude
+        if: steps.collect.outputs.has_changes == 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          allowed_bots: ${{ inputs.allowed_bots }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            You reviewed this pull request before, and new commits have arrived since.
+
+            `.claude-review/findings.json` lists the findings from the earlier reviews:
+            each has a thread_id, whether it is resolved, the file and line, and its text.
+            `.claude-review/new-commits.diff` is the diff of the commits since the last review.
+
+            Do two things:
+
+            1. For each finding that is not resolved, read the current code and decide
+               whether the new commits fix it. Report a finding as fixed only when the
+               problem is gone, not when nearby code merely changed.
+
+            2. Review the new commits for new issues: bugs that will produce wrong
+               results, and security vulnerabilities with a clear way to exploit them.
+               Use the CLAUDE.md files for conventions. Flag only issues you are certain
+               of. Do not flag style, nitpicks, or anything a linter catches. Do not flag
+               an issue that any finding in findings.json already covers, resolved or not.
+
+               Post each new issue as an inline comment on the line where it occurs,
+               using `mcp__github_inline_comment__create_inline_comment` with
+               `confirmed: true`. Give a brief description and a concrete fix.
+
+            Post no other comments. Return the thread_id of each fixed finding with a
+            one-sentence reason.
+
+          claude_args: >-
+            --allowedTools "Read,Grep,Glob,mcp__github_inline_comment__create_inline_comment"
+            --json-schema '{"type":"object","properties":{"fixed":{"type":"array","items":{"type":"object","properties":{"thread_id":{"type":"string"},"reason":{"type":"string"}},"required":["thread_id","reason"]}}},"required":["fixed"]}'
+
+      - name: Resolve fixed findings
+        if: steps.claude.outputs.structured_output != ''
+        env:
+          RESULT: ${{ steps.claude.outputs.structured_output }}
+        run: |
+          open_ids=$(jq -r '.[] | select(.resolved | not) | .thread_id' .claude-review/findings.json)
+          jq -c '.fixed[]' <<< "$RESULT" | while read -r fix; do
+            thread_id=$(jq -r '.thread_id' <<< "$fix")
+            # Resolve only Claude's own open threads, whatever IDs the model returns
+            grep -qxF "$thread_id" <<< "$open_ids" || continue
+            gh api graphql -f id="$thread_id" -f body="Fixed in ${HEAD_SHA:0:7}: $(jq -r '.reason' <<< "$fix")" \
+              -f query="$RESOLVE_FINDING_MUTATION" > /dev/null
+          done
+
+  summary:
+    needs: [review-state, code-review, security-review, follow-up-review]
+    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') }}
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Record the reviewed commit and list open findings
+        run: |
+          open_findings=$(gh api graphql -f owner="${GITHUB_REPOSITORY%/*}" -f name="${GITHUB_REPOSITORY#*/}" -F pr="$PR_NUMBER" \
+            -f query="$CLAUDE_FINDINGS_QUERY" --jq "$CLAUDE_FINDINGS_JQ" \
+            | jq -r '.[] | select(.resolved | not) | "- [\(.path)](\(.url))"')
+
+          body="<!-- claude-review reviewed=$HEAD_SHA -->
+          **Claude review** of $HEAD_SHA
+
+          Open findings: $(grep -c . <<< "$open_findings" || true)
+          $open_findings
+
+          To dismiss a finding, resolve its thread. A reply alone does not dismiss it."
+
+          comment_id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" --paginate \
+            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | contains("<!-- claude-review reviewed="))) | .id' \
+            | tail -n 1)
+
+          if [ -n "$comment_id" ]; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$comment_id" -f body="$body" > /dev/null
+          else
+            gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body "$body"
+          fi
