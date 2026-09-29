@@ -188,20 +188,30 @@ jobs:
     steps:
       - name: Post each finding on its line, or on the PR when GitHub refuses the line
         run: |
-          jq -c '.findings[]' <<< "$FINDINGS" | while read -r finding; do
+          failed=0
+          while read -r finding; do
             path=$(jq -r '.path' <<< "$finding")
             path=${path#"$GITHUB_WORKSPACE/"}
             line=$(jq -r '.line' <<< "$finding")
             text=$(jq -r '.body' <<< "$finding")
 
-            if ! gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/comments" \
+            # line comes from the model, and gh -F reads a value that starts with @ as a file, so only digits pass
+            if [[ "$line" =~ ^[0-9]+$ ]] && gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/comments" \
               -f commit_id="$HEAD_SHA" -f path="$path" -F line="$line" -f side=RIGHT \
               -f body="**Claude code review**"$'\n\n'"$text"$'\n\n'"$CODE_REVIEW_FINDING_MARKER" --silent; then
-              # A line outside the diff is refused; the finding still reaches the PR, but as a thread nobody can resolve
-              gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
-                --body "**Claude code review** of \`$path\` line $line"$'\n\n'"$text"
+              continue
             fi
-          done
+
+            # A line outside the diff is refused; the finding still reaches the PR, but as a thread nobody can resolve
+            gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+              --body "**Claude code review** of \`$path\` line $line"$'\n\n'"$text" || failed=$((failed + 1))
+          done < <(jq -c '.findings[]' <<< "$FINDINGS")
+
+          # Every finding is tried before the step fails, so one bad post does not stop the rest
+          if [ "$failed" -gt 0 ]; then
+            echo "::error::$failed finding(s) could not be posted, inline or as a PR comment"
+            exit 1
+          fi
 
   security-review:
     needs: review-state
