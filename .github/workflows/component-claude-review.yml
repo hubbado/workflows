@@ -186,7 +186,8 @@ jobs:
 
                Post each new issue as an inline comment on the line where it occurs,
                using `mcp__github_inline_comment__create_inline_comment` with
-               `confirmed: true`. Start each comment with this line, exactly as written:
+               `confirmed: true`, on the line number in the current file, not a position in
+               the diff: read the file to check it. Start each comment with this line, exactly as written:
                ${{ env.REVIEW_COMMENT_HEADING }}
                Then give a brief description and a concrete fix.
 
