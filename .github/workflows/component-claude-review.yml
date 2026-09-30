@@ -1,5 +1,5 @@
 # Reviews a PR as inline comments: one review prompt for the first review and for each follow-up that
-# "@claude review" asks for, plus /security-review on the first review. A script resolves fixed findings.
+# "@claude review" asks for, plus /security-review on the same changes. A script resolves fixed findings.
 name: "Component workflow: Claude Review"
 
 on:
@@ -59,6 +59,7 @@ jobs:
       head_sha: ${{ steps.state.outputs.head_sha }}
       reviewed_sha: ${{ steps.state.outputs.reviewed_sha }}
       guidance: ${{ steps.state.outputs.guidance }}
+      has_changes: ${{ steps.collect.outputs.has_changes }}
 
     steps:
       - name: Decide between a first review, a follow-up, or nothing
@@ -116,9 +117,44 @@ jobs:
             echo "mode=follow-up" >> "$GITHUB_OUTPUT"
           fi
 
+      # Collected once, so the code review and the security review cover the same commits
+      - name: Collect the findings already on the PR, and the changes to review
+        id: collect
+        if: steps.state.outputs.mode != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODE: ${{ steps.state.outputs.mode }}
+          PR_NUMBER: ${{ steps.state.outputs.pr_number }}
+          HEAD_SHA: ${{ steps.state.outputs.head_sha }}
+          REVIEWED_SHA: ${{ steps.state.outputs.reviewed_sha }}
+        run: |
+          mkdir -p claude-review-inputs
+          gh api graphql -f owner="${GITHUB_REPOSITORY%/*}" -f name="${GITHUB_REPOSITORY#*/}" -F pr="$PR_NUMBER" \
+            -f query="$CLAUDE_FINDINGS_QUERY" --jq "$CLAUDE_FINDINGS_JQ" > claude-review-inputs/findings.json
+
+          # A first review covers the whole PR; a follow-up covers the commits since the last review,
+          # or the whole PR again when that commit is gone, for example after a force push
+          if [ "$MODE" = first ] || ! gh api -H "Accept: application/vnd.github.diff" \
+            "repos/$GITHUB_REPOSITORY/compare/$REVIEWED_SHA...$HEAD_SHA" > claude-review-inputs/changes.diff; then
+            gh pr diff "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" > claude-review-inputs/changes.diff
+          fi
+
+          if [ -s claude-review-inputs/changes.diff ]; then
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Not a hidden directory: upload-artifact leaves hidden files out
+      - name: Keep the findings and the changes for the review jobs
+        if: steps.collect.outputs.has_changes == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: claude-review-inputs
+          path: claude-review-inputs/
+          retention-days: 1
+
   review:
     needs: review-state
-    if: needs.review-state.outputs.mode != ''
+    if: needs.review-state.outputs.has_changes == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -130,10 +166,7 @@ jobs:
       result: ${{ steps.claude.outputs.structured_output }}
     env:
       GH_TOKEN: ${{ github.token }}
-      MODE: ${{ needs.review-state.outputs.mode }}
       PR_NUMBER: ${{ needs.review-state.outputs.pr_number }}
-      HEAD_SHA: ${{ needs.review-state.outputs.head_sha }}
-      REVIEWED_SHA: ${{ needs.review-state.outputs.reviewed_sha }}
       MARKED_COMMENTS_JQ: '[.[] | select(.user.login == "claude[bot]" and (.body | contains(env.REVIEW_COMMENT_HEADING)))] | length'
 
     steps:
@@ -143,30 +176,20 @@ jobs:
           ref: ${{ needs.review-state.outputs.head_sha }}
           fetch-depth: 1
 
-      - name: Collect the findings already on the PR, and the changes to review
-        id: collect
+      - name: Get the findings and the changes to review
+        uses: actions/download-artifact@v8
+        with:
+          name: claude-review-inputs
+          path: .claude-review
+
+      - name: Count the code review comments already on the PR
+        id: count
         run: |
-          mkdir -p .claude-review
-          gh api graphql -f owner="${GITHUB_REPOSITORY%/*}" -f name="${GITHUB_REPOSITORY#*/}" -F pr="$PR_NUMBER" \
-            -f query="$CLAUDE_FINDINGS_QUERY" --jq "$CLAUDE_FINDINGS_JQ" > .claude-review/findings.json
-
-          # A first review covers the whole PR; a follow-up covers the commits since the last review,
-          # or the whole PR again when that commit is gone, for example after a force push
-          if [ "$MODE" = first ] || ! gh api -H "Accept: application/vnd.github.diff" \
-            "repos/$GITHUB_REPOSITORY/compare/$REVIEWED_SHA...$HEAD_SHA" > .claude-review/changes.diff; then
-            gh pr diff "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" > .claude-review/changes.diff
-          fi
-
-          if [ -s .claude-review/changes.diff ]; then
-            echo "has_changes=true" >> "$GITHUB_OUTPUT"
-          fi
-
           count=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/comments" --paginate --jq "$MARKED_COMMENTS_JQ" | awk '{ sum += $1 } END { print sum + 0 }')
           echo "marked_before=$count" >> "$GITHUB_OUTPUT"
 
       - name: Run Claude review
         id: claude
-        if: steps.collect.outputs.has_changes == 'true'
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -189,7 +212,8 @@ jobs:
                problem is gone, not when nearby code merely changed.
 
             2. Review every change in the diff for new issues, however small the change:
-               ${{ needs.review-state.outputs.mode == 'first' && 'bugs that will produce wrong results. A separate security review runs alongside this first review, so leave security vulnerabilities to it.' || 'bugs that will produce wrong results, and security vulnerabilities with a clear way to exploit them.' }}
+               bugs that will produce wrong results. A separate security review runs alongside
+               this review, so leave security vulnerabilities to it.
                Use the CLAUDE.md files for conventions. Flag
                only issues you are certain of. Do not flag style, nitpicks, or anything a
                linter catches. Do not flag an issue that any finding in findings.json
@@ -218,7 +242,7 @@ jobs:
         if: steps.claude.outputs.structured_output != ''
         env:
           RESULT: ${{ steps.claude.outputs.structured_output }}
-          MARKED_BEFORE: ${{ steps.collect.outputs.marked_before }}
+          MARKED_BEFORE: ${{ steps.count.outputs.marked_before }}
         run: |
           posted=$(jq -r '.posted' <<< "$RESULT")
           after=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/comments" --paginate --jq "$MARKED_COMMENTS_JQ" | awk '{ sum += $1 } END { print sum + 0 }')
@@ -246,7 +270,7 @@ jobs:
 
   security-review:
     needs: review-state
-    if: needs.review-state.outputs.mode == 'first'
+    if: needs.review-state.outputs.has_changes == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -263,6 +287,12 @@ jobs:
           ref: ${{ needs.review-state.outputs.head_sha }}
           fetch-depth: 1
 
+      - name: Get the findings and the changes to review
+        uses: actions/download-artifact@v8
+        with:
+          name: claude-review-inputs
+          path: .claude-review
+
       - name: Run Claude Security Review
         id: claude
         uses: anthropics/claude-code-action@v1
@@ -273,11 +303,16 @@ jobs:
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ needs.review-state.outputs.pr_number }}
 
-            Run the `/security-review` skill on this pull request.
+            ${{ needs.review-state.outputs.mode == 'first' && 'This is the first review of this pull request.' || 'You reviewed this pull request before, and new commits have arrived since.' }}
 
-            Focus on the diff. Read surrounding context where needed to understand
-            data flow, trust boundaries, and authorization. Use the repository's
-            CLAUDE.md for conventions.
+            Run the `/security-review` skill on the changes in `.claude-review/changes.diff`:
+            the whole pull request on a first review, or the commits since the last review
+            on a follow-up. Review only those changes. Read surrounding code where needed
+            to understand data flow, trust boundaries, and authorization. Use the
+            repository's CLAUDE.md for conventions.
+
+            `.claude-review/findings.json` lists the findings already on the pull request,
+            resolved or not. Do not post a vulnerability that a finding there already covers.
 
             ${{ inputs.context_hint }}
 
@@ -289,7 +324,7 @@ jobs:
             concrete fix. Post nothing else: no summary, no confirmation when you find
             nothing, and no notes on issues that are not security vulnerabilities.
 
-          claude_args: '--allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*)"'
+          claude_args: '--allowedTools "Read,Grep,Glob,mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*)"'
 
   finish:
     needs: [review-state, review, security-review]
