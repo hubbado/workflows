@@ -43,6 +43,7 @@ env:
   # Heads each comment the review job posts, so its comments can be counted apart from the security review's.
   # A visible heading, because the inline-comment tool strips HTML comments.
   REVIEW_COMMENT_HEADING: "**Code review**"
+  REVIEW_MODEL: claude-fable-5-2
 
 jobs:
   review-state:
@@ -255,6 +256,7 @@ jobs:
             one-sentence reason, and the number of new issues you posted.
 
           claude_args: >-
+            --model ${{ env.REVIEW_MODEL }}
             --allowedTools "Read,Grep,Glob,mcp__github_inline_comment__create_inline_comment"
             --json-schema '{"type":"object","properties":{"fixed":{"type":"array","items":{"type":"object","properties":{"thread_id":{"type":"string"},"reason":{"type":"string"}},"required":["thread_id","reason"]}},"posted":{"type":"integer","minimum":0}},"required":["fixed","posted"]}'
 
@@ -345,7 +347,7 @@ jobs:
             concrete fix. Post nothing else: no summary, no confirmation when you find
             nothing, and no notes on issues that are not security vulnerabilities.
 
-          claude_args: '--allowedTools "Read,Grep,Glob,mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*)"'
+          claude_args: '--model ${{ env.REVIEW_MODEL }} --allowedTools "Read,Grep,Glob,mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*)"'
 
   finish:
     needs: [review-state, review, security-review]
